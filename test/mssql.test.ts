@@ -26,7 +26,6 @@ vi.mock('mssql', () => {
     }
     async batch(sql: string) {
       rec.events.push(`batch:${sql}`);
-      if (rec.failOn && sql.includes(rec.failOn)) throw new Error(`boom: ${sql}`);
       return { recordset: [] };
     }
   }
@@ -141,9 +140,7 @@ describe('mssql orchestration', () => {
     expect(rec.events).toContain('begin');
     expect(rec.events).toContain('commit');
     expect(rec.events).not.toContain('rollback');
-    // Self-contained batches (params []) run via batch(), not query() — see the exec() note.
-    expect(rec.events).toContain(`batch:${batch('INSERT').sql}`);
-    expect(rec.events).toContain(`batch:${batch('UPDATE').sql}`);
+    expect(rec.queries.map((q) => q.sql)).toEqual([batch('INSERT').sql, batch('UPDATE').sql]);
   });
 
   it('transaction() rolls back (not commits) when a statement fails', async () => {
@@ -170,46 +167,5 @@ describe('mssql orchestration', () => {
   });
 });
 
-// ─── real SQL Server: runs only when MSSQL_CONNECTION_STRING is set; skipped locally ─────────────
-const MSSQL_CONNECTION_STRING = process.env['MSSQL_CONNECTION_STRING'];
-
-describe.skipIf(!MSSQL_CONNECTION_STRING)('mssql executor (real database)', () => {
-  // Uses verbatim MssqlQuery output (self-contained sp_executesql, params []).
-  const db = createMssqlExecutor({ connectionString: MSSQL_CONNECTION_STRING! });
-  const insert = (id: number, name: string) => ({
-    sql:
-      `SET NOCOUNT ON; exec sp_executesql N'INSERT INTO _sqleasy_engine_it (id, name) ` +
-      `VALUES (@p0, @p1);', N'@p0 int, @p1 nvarchar(max)', @p0 = ${id}, @p1 = N'${name}';`,
-    params: [] as never[],
-  });
-
-  it('commits a transaction atomically and rolls back on failure', async () => {
-    await db.run({
-      sql: "IF OBJECT_ID('_sqleasy_engine_it') IS NOT NULL DROP TABLE _sqleasy_engine_it;",
-    });
-    await db.run({
-      sql: 'CREATE TABLE _sqleasy_engine_it (id INT PRIMARY KEY, name NVARCHAR(200));',
-    });
-    // Read the count positionally — robust to how the driver keys a COUNT(*) column.
-    const countRows = async () =>
-      Number(
-        Object.values(
-          (await db.run({ sql: 'SELECT COUNT(*) AS n FROM _sqleasy_engine_it;' })).rows[0]!,
-        )[0],
-      );
-
-    try {
-      await db.transaction([insert(1, 'Ada'), insert(2, 'Grace')]);
-      expect(await countRows()).toBe(2);
-
-      await expect(db.transaction([insert(3, 'Bob'), insert(1, 'Dup')])).rejects.toThrow();
-      expect(await countRows()).toBe(2); // Bob rolled back with the failed batch
-    } finally {
-      await db
-        .run({
-          sql: "IF OBJECT_ID('_sqleasy_engine_it') IS NOT NULL DROP TABLE _sqleasy_engine_it;",
-        })
-        .catch(() => {});
-    }
-  });
-});
+// The real-database mssql test lives in mssql.integration.test.ts — it must NOT share this file,
+// whose vi.mock('mssql') would hijack the real driver.
