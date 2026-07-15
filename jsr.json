@@ -1,0 +1,16 @@
+{
+  "name": "@deebeetech/sqleasy-engine",
+  "version": "1.0.0",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sqlite": "./src/sqlite/index.ts",
+    "./postgres": "./src/postgres/index.ts",
+    "./mysql": "./src/mysql/index.ts",
+    "./mssql": "./src/mssql/index.ts",
+    "./introspection": "./src/introspection/index.ts"
+  },
+  "publish": {
+    "include": ["./src/**/*", "./README.md", "./CHANGELOG.md", "./LICENSE"]
+  }
+}
