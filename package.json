@@ -45,6 +45,11 @@
       "types": "./dist/postgres/index.d.mts",
       "import": "./dist/postgres/index.mjs",
       "require": "./dist/postgres/index.cjs"
+    },
+    "./mysql": {
+      "types": "./dist/mysql/index.d.mts",
+      "import": "./dist/mysql/index.mjs",
+      "require": "./dist/mysql/index.cjs"
     }
   },
   "files": [
@@ -64,13 +69,17 @@
   "packageManager": "pnpm@11.13.0",
   "peerDependencies": {
     "@libsql/client": "*",
-    "pg": "*"
+    "pg": "*",
+    "mysql2": "*"
   },
   "peerDependenciesMeta": {
     "@libsql/client": {
       "optional": true
     },
     "pg": {
+      "optional": true
+    },
+    "mysql2": {
       "optional": true
     }
   },
@@ -81,6 +90,7 @@
     "@types/pg": "^8.20.0",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
+    "mysql2": "^3.22.6",
     "pg": "^8.22.0",
     "prettier": "^3.9.5",
     "tsdown": "^0.22.7",
