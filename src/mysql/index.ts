@@ -1,4 +1,10 @@
-import { createPool, type Pool, type PoolOptions, type ResultSetHeader } from 'mysql2/promise';
+import {
+  createPool,
+  type Pool,
+  type PoolConnection,
+  type PoolOptions,
+  type ResultSetHeader,
+} from 'mysql2/promise';
 import type { DbExecutor, ExplainEstimate, PreparedSql, QueryResult, Row } from '../index';
 
 /** Connection settings — any `mysql2` `PoolOptions`. */
@@ -58,14 +64,35 @@ const toResult = <T>(result: unknown): QueryResult<T> => {
   return { rows: [], rowCount: (result as ResultSetHeader).affectedRows ?? 0 };
 };
 
+/** Options for a MySQL executor. */
+export type MysqlExecutorOptions = {
+  /**
+   * Per-statement client-side timeout in milliseconds. On expiry `mysql2` errors and destroys the
+   * connection, which makes the server kill the running statement. MySQL has no pool-level
+   * query-timeout config, so this is the knob for a statement ceiling. Omit for no timeout.
+   */
+  statementTimeoutMs?: number;
+};
+
 /**
  * Build a MySQL executor over an EXISTING pool — bring your own `mysql2` Pool to share one across
  * your app (or hand in a test double). {@link createMysqlExecutor} is the usual entry.
  */
-export function createMysqlExecutorFromPool(pool: Pool): DbExecutor {
+export function createMysqlExecutorFromPool(
+  pool: Pool,
+  opts: MysqlExecutorOptions = {},
+): DbExecutor {
+  const { statementTimeoutMs } = opts;
+  // mysql2 has no pool-level query timeout — apply it per statement via the object form, on both the
+  // pool (run/explain) and a checked-out connection (transaction).
+  const query = (target: Pool | PoolConnection, sql: string, args: unknown[]) =>
+    statementTimeoutMs != null
+      ? target.query({ sql, timeout: statementTimeoutMs }, args)
+      : target.query(sql, args);
+
   return {
     async run<T = Row>(prepared: PreparedSql): Promise<QueryResult<T>> {
-      const [result] = await pool.query(prepared.sql, argsOf(prepared));
+      const [result] = await query(pool, prepared.sql, argsOf(prepared));
       return toResult<T>(result);
     },
 
@@ -78,7 +105,7 @@ export function createMysqlExecutorFromPool(pool: Pool): DbExecutor {
         await conn.beginTransaction();
         const results: QueryResult[] = [];
         for (const s of statements) {
-          const [result] = await conn.query(s.sql, argsOf(s));
+          const [result] = await query(conn, s.sql, argsOf(s));
           results.push(toResult(result));
         }
         await conn.commit();
@@ -93,7 +120,7 @@ export function createMysqlExecutorFromPool(pool: Pool): DbExecutor {
 
     async explain(prepared: PreparedSql): Promise<ExplainEstimate> {
       // EXPLAIN never executes the statement; FORMAT=JSON is the only form carrying a cost estimate.
-      const [rows] = await pool.query(`EXPLAIN FORMAT=JSON ${prepared.sql}`, argsOf(prepared));
+      const [rows] = await query(pool, `EXPLAIN FORMAT=JSON ${prepared.sql}`, argsOf(prepared));
       const raw = Array.isArray(rows) ? (rows[0] as { EXPLAIN?: string } | undefined)?.EXPLAIN : '';
       return parseMysqlPlan(raw ?? '');
     },
@@ -106,8 +133,12 @@ export function createMysqlExecutorFromPool(pool: Pool): DbExecutor {
 
 /**
  * A MySQL / MariaDB executor backed by a `mysql2` connection pool (placeholders: `?`). Feed it the
- * `{ sql, params }` a `MysqlQuery` builder emits.
+ * `{ sql, params }` a `MysqlQuery` builder emits. Pass `{ statementTimeoutMs }` for a per-statement
+ * ceiling (MySQL has no pool-level knob for it).
  */
-export function createMysqlExecutor(config: MysqlConfig): DbExecutor {
-  return createMysqlExecutorFromPool(createPool(config));
+export function createMysqlExecutor(
+  config: MysqlConfig,
+  opts: MysqlExecutorOptions = {},
+): DbExecutor {
+  return createMysqlExecutorFromPool(createPool(config), opts);
 }

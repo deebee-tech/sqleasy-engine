@@ -130,6 +130,33 @@ describe('mysql transaction orchestration', () => {
   });
 });
 
+// ─── statementTimeoutMs: mysql has no pool-level knob, so it wraps each query in { sql, timeout } ──
+describe('mysql statementTimeoutMs', () => {
+  const firstQueryArg = async (opts?: { statementTimeoutMs?: number }): Promise<unknown> => {
+    let firstArg: unknown;
+    const pool = {
+      query: async (arg: unknown) => {
+        firstArg = arg;
+        return [[{ ok: 1 }], []];
+      },
+      end: async () => {},
+    } as unknown as Pool;
+    await createMysqlExecutorFromPool(pool, opts).run({ sql: 'SELECT 1;', params: [] });
+    return firstArg;
+  };
+
+  it('wraps the statement in { sql, timeout } when statementTimeoutMs is set', async () => {
+    expect(await firstQueryArg({ statementTimeoutMs: 30_000 })).toEqual({
+      sql: 'SELECT 1;',
+      timeout: 30_000,
+    });
+  });
+
+  it('passes plain sql (no timeout wrapper) when the option is omitted', async () => {
+    expect(await firstQueryArg()).toBe('SELECT 1;');
+  });
+});
+
 // ─── real MySQL: runs only when MYSQL_URL is set (a CI service); skipped locally ─────────────────
 const MYSQL_URL = process.env['MYSQL_URL'];
 
