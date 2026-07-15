@@ -1,4 +1,9 @@
-# @deebeetech/sqleasy-engine
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/deebee-tech/sqleasy-engine/main/assets/sqleasy-engine-lockup-dark.svg">
+    <img alt="SQLEasy Engine" src="https://raw.githubusercontent.com/deebee-tech/sqleasy-engine/main/assets/sqleasy-engine-lockup-light.svg" width="482">
+  </picture>
+</p>
 
 **A thin, opt-in executor for [`@deebeetech/sqleasy`](https://github.com/deebee-tech/sqleasy).**
 
