@@ -71,6 +71,24 @@ const toResult = <T>(result: IResult<unknown>): QueryResult<T> => ({
   rowCount: result.recordset ? result.recordset.length : (result.rowsAffected?.[0] ?? 0),
 });
 
+/**
+ * SQLEasy's mssql dialect unconditionally prefixes `SET NOCOUNT ON; ` to every statement it emits.
+ * NOCOUNT suppresses the DONE row counts that tedious reads, so `rowsAffected` came back `[]` and
+ * every INSERT/UPDATE/DELETE routed through here reported `rowCount: 0` — a write that plainly
+ * succeeded looked like it had touched nothing.
+ *
+ * Rewritten rather than stripped: forcing OFF also corrects a session that already had NOCOUNT ON,
+ * whereas removing the prefix would just inherit whatever the connection was left in. The match is
+ * anchored at the start of the batch, so it cannot fire on the same text inside a string literal —
+ * the reason this file refuses to rewrite `?` placeholders by scanning.
+ *
+ * The real fix belongs upstream in SQLEasy, which has no reason to emit this at all; the prefix is
+ * frozen into its cross-language golden corpus, so it cannot move without the Dart port moving in
+ * lockstep.
+ */
+export const withRowCounts = (sql: string): string =>
+  sql.replace(/^\s*SET\s+NOCOUNT\s+ON\s*;/i, 'SET NOCOUNT OFF;');
+
 // Bind params (if any) as @p0..@pN. SQLEasy's mssql dialect inlines its values into the
 // sp_executesql batch and passes `params: []`, so nothing binds on that path; a caller passing bound
 // values must reference @p0.. in their SQL (mssql has no positional `?`). No `?`→`@p` rewriting —
@@ -110,7 +128,7 @@ export function createMssqlExecutor(config: MssqlConfig): DbExecutor {
     async run<T = Row>(prepared: PreparedSql): Promise<QueryResult<T>> {
       await ensureReady();
       const request = bindParams(pool.request(), prepared.params);
-      return toResult<T>(await request.query(prepared.sql));
+      return toResult<T>(await request.query(withRowCounts(prepared.sql)));
     },
 
     async transaction(statements: readonly PreparedSql[]): Promise<QueryResult[]> {
@@ -121,7 +139,7 @@ export function createMssqlExecutor(config: MssqlConfig): DbExecutor {
         const results: QueryResult[] = [];
         for (const s of statements) {
           const request = bindParams(new Request(tx), s.params);
-          results.push(toResult(await request.query(s.sql)));
+          results.push(toResult(await request.query(withRowCounts(s.sql))));
         }
         await tx.commit();
         return results;

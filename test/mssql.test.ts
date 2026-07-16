@@ -62,7 +62,31 @@ vi.mock('mssql', () => {
 
 // Imported after the mock (vitest hoists vi.mock above imports). The pure functions don't touch the
 // driver; the executor uses the mocked ConnectionPool/Transaction/Request.
-import { createMssqlExecutor, parsePlanXml, toExplainableBatch } from '../src/mssql';
+import { createMssqlExecutor, parsePlanXml, toExplainableBatch, withRowCounts } from '../src/mssql';
+
+// ─── withRowCounts: SQLEasy's NOCOUNT prefix is why every write reported rowCount 0 ───────────────
+describe('withRowCounts', () => {
+  it("flips SQLEasy's NOCOUNT prefix off, so the driver still sees the DONE row counts", () => {
+    expect(
+      withRowCounts(`SET NOCOUNT ON; exec sp_executesql N'INSERT INTO t VALUES (1);', N'';`),
+    ).toBe(`SET NOCOUNT OFF; exec sp_executesql N'INSERT INTO t VALUES (1);', N'';`);
+  });
+
+  it('tolerates the spacing and casing variations of the prefix', () => {
+    expect(withRowCounts('set nocount on;SELECT 1')).toBe('SET NOCOUNT OFF;SELECT 1');
+    expect(withRowCounts('  SET   NOCOUNT   ON  ; SELECT 1')).toBe('SET NOCOUNT OFF; SELECT 1');
+  });
+
+  it('leaves a statement without the prefix untouched', () => {
+    expect(withRowCounts('INSERT INTO t VALUES (1);')).toBe('INSERT INTO t VALUES (1);');
+  });
+
+  it('only fires at the start, so it cannot rewrite the text inside a string literal', () => {
+    // Anchoring is what makes this safe: the same bytes inside a literal must survive verbatim.
+    const sql = `exec sp_executesql N'SELECT ''SET NOCOUNT ON;'' AS s;', N'';`;
+    expect(withRowCounts(sql)).toBe(sql);
+  });
+});
 
 // ─── toExplainableBatch: lift the inner statement out of sp_executesql (reused DeeBee cases) ──────
 describe('toExplainableBatch', () => {
@@ -140,7 +164,12 @@ describe('mssql orchestration', () => {
     expect(rec.events).toContain('begin');
     expect(rec.events).toContain('commit');
     expect(rec.events).not.toContain('rollback');
-    expect(rec.queries.map((q) => q.sql)).toEqual([batch('INSERT').sql, batch('UPDATE').sql]);
+    // Every statement reaches the driver with NOCOUNT flipped off, not just the first: with it on,
+    // the driver reports no rows affected and each write in the transaction looks like a no-op.
+    expect(rec.queries.map((q) => q.sql)).toEqual([
+      `SET NOCOUNT OFF; exec sp_executesql N'INSERT';`,
+      `SET NOCOUNT OFF; exec sp_executesql N'UPDATE';`,
+    ]);
   });
 
   it('transaction() rolls back (not commits) when a statement fails', async () => {
