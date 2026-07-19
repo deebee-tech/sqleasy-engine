@@ -6,7 +6,14 @@ import {
   type ResultSetHeader,
 } from 'mysql2/promise';
 import { explainBody } from '../explain-body';
-import type { DbExecutor, ExplainEstimate, PreparedSql, QueryResult, Row } from '../index';
+import type {
+  DbExecutor,
+  ExecutorOptions,
+  ExplainEstimate,
+  PreparedSql,
+  QueryResult,
+  Row,
+} from '../index';
 
 /** Connection settings — any `mysql2` `PoolOptions`. */
 export type MysqlConfig = PoolOptions;
@@ -76,15 +83,14 @@ const toResult = <T>(result: unknown): QueryResult<T> => {
   return { rows: [], rowCount: (result as ResultSetHeader).affectedRows ?? 0 };
 };
 
-/** Options for a MySQL executor. */
-export type MysqlExecutorOptions = {
-  /**
-   * Per-statement client-side timeout in milliseconds. On expiry `mysql2` errors and destroys the
-   * connection, which makes the server kill the running statement. MySQL has no pool-level
-   * query-timeout config, so this is the knob for a statement ceiling. Omit for no timeout.
-   */
-  statementTimeoutMs?: number;
-};
+/**
+ * Options for a MySQL executor.
+ *
+ * @deprecated Use the shared {@link ExecutorOptions} — this is now an alias for it. MySQL realizes
+ * `statementTimeoutMs` as a per-query client timeout: on expiry `mysql2` destroys the connection,
+ * which makes the server kill the running statement (MySQL has no pool-level query-timeout config).
+ */
+export type MysqlExecutorOptions = ExecutorOptions;
 
 /**
  * Build a MySQL executor over an EXISTING pool — bring your own `mysql2` Pool to share one across

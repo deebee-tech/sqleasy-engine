@@ -1,6 +1,13 @@
 import { createClient, type Config, type InArgs, type ResultSet } from '@libsql/client';
 import { explainBody } from '../explain-body';
-import type { DbExecutor, ExplainEstimate, PreparedSql, QueryResult, Row } from '../index';
+import type {
+  DbExecutor,
+  ExecutorOptions,
+  ExplainEstimate,
+  PreparedSql,
+  QueryResult,
+  Row,
+} from '../index';
 
 /**
  * How to reach the database. Either a full `@libsql/client` {@link Config} (a Turso/libSQL `url` +
@@ -31,7 +38,8 @@ const toResult = <T>(rs: ResultSet): QueryResult<T> => {
  * A SQLite / libSQL / Turso executor backed by `@libsql/client` (placeholders: `?`). Accepts any
  * `{ sql, params }` — SQLEasy builders are one producer, not the only one.
  */
-export function createSqliteExecutor(config: SqliteConfig): DbExecutor {
+export function createSqliteExecutor(config: SqliteConfig, opts: ExecutorOptions = {}): DbExecutor {
+  const { statementTimeoutMs } = opts;
   const clientConfig: Config = 'file' in config ? { url: `file:${config.file}` } : config;
   const client = createClient(clientConfig);
 
@@ -54,11 +62,29 @@ export function createSqliteExecutor(config: SqliteConfig): DbExecutor {
     return busyTimeout;
   };
 
+  // ponytail: @libsql/client exposes no interrupt(), so this bounds the AWAITED promise but cannot
+  // cancel a running REMOTE statement — a long Turso query keeps burning server time after we reject.
+  // Per-attempt (not one absolute deadline across busy-retries) is fine: a genuinely slow statement
+  // is not busy, so it rejects on the first attempt and never loops; only SQLITE_BUSY loops, and that
+  // fails fast under the 5s busy_timeout. Upgrade to an absolute deadline only if that ceiling bites.
+  const withDeadline = <R>(op: () => Promise<R>): Promise<R> => {
+    if (statementTimeoutMs == null) return op();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(new Error(`sqleasy-engine: statement exceeded ${statementTimeoutMs}ms timeout`)),
+        statementTimeoutMs,
+      );
+    });
+    return Promise.race([op(), deadline]).finally(() => clearTimeout(timer));
+  };
+
   const withBusyRetry = async <R>(op: () => Promise<R>): Promise<R> => {
     await ensureBusyTimeout();
     for (let attempt = 0; ; attempt++) {
       try {
-        return await op();
+        return await withDeadline(op);
       } catch (err) {
         if (!isLocalFile || !isBusy(err) || attempt >= BUSY_RETRY_DELAYS_MS.length) throw err;
         await sleep(BUSY_RETRY_DELAYS_MS[attempt]!);

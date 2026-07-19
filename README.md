@@ -55,6 +55,30 @@ executors (`createPostgresExecutor` / `createMysqlExecutor`) own their pool and 
 SQL Server has no `FromPool` helper: `createMssqlExecutor` owns the pool so it can rebuild after a
 failed connect (the `mssql` driver caches a rejected connect promise).
 
+The factory-created Postgres executor also attaches a pool `'error'` handler, so an idle client whose
+socket the backend drops cannot crash the process — `pg` re-emits that as an unhandled `'error'`
+otherwise. (`…FromPool` leaves your pool's error handling to you.)
+
+## Statement timeouts
+
+Every factory takes an optional second argument, `{ statementTimeoutMs }` — one ceiling for how long
+a single statement may run — realized with each driver's native mechanism:
+
+```typescript
+const db = createPostgresExecutor(config, { statementTimeoutMs: 30_000 });
+```
+
+| Dialect         | Mechanism                                                                                                       |
+| --------------- | --------------------------------------------------------------------------------------------------------------- |
+| Postgres        | `statement_timeout` merged into the pool config (server cancels; a no-op on `…FromPool`, a foreign pool)        |
+| MySQL           | per-query client timeout — `mysql2` destroys the connection, killing the statement                              |
+| SQL Server      | per-`Request` `requestTimeout` (reaches the `connectionString` form, which config-level `requestTimeout` can't) |
+| SQLite / libSQL | a client-side deadline that rejects the awaited promise                                                         |
+
+The SQLite/libSQL path is **best-effort**: `@libsql/client` has no `interrupt()`, so a running
+_remote_ (Turso) statement keeps burning server time after the reject — the promise is bounded, the
+server-side work is not. Omit the option for no timeout.
+
 ## Schema introspection
 
 ```typescript

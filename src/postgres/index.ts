@@ -1,9 +1,17 @@
 import { Pool, type PoolConfig } from 'pg';
 import { explainBody } from '../explain-body';
-import type { DbExecutor, ExplainEstimate, PreparedSql, QueryResult, Row } from '../index';
+import type {
+  DbExecutor,
+  ExecutorOptions,
+  ExplainEstimate,
+  PreparedSql,
+  QueryResult,
+  Row,
+} from '../index';
 
 /** Connection settings — any `pg` `PoolConfig`. Set `statement_timeout` here if you want a
- * per-connection ceiling; the engine imposes none of its own. */
+ * per-connection ceiling, or pass {@link ExecutorOptions.statementTimeoutMs} to
+ * {@link createPostgresExecutor}; the engine imposes none of its own. */
 export type PostgresConfig = PoolConfig;
 
 /** The root of `EXPLAIN (FORMAT JSON)`: cost/rows sit on the top plan; a sequential scan anywhere
@@ -100,11 +108,27 @@ export function createPostgresExecutorFromPool(pool: Pool): DbExecutor {
 
 /**
  * A Postgres executor backed by a `pg` connection pool (placeholders: `$1`, `$2`, …). Accepts any
- * `{ sql, params }` — SQLEasy builders are one producer, not the only one. {@link close} ends the
- * pool this factory created.
+ * `{ sql, params }` — SQLEasy builders are one producer, not the only one. Pass
+ * `{ statementTimeoutMs }` to merge a server-enforced `statement_timeout` into the pool config.
+ * {@link close} ends the pool this factory created.
  */
-export function createPostgresExecutor(config: PostgresConfig): DbExecutor {
-  const pool = new Pool(config);
+export function createPostgresExecutor(
+  config: PostgresConfig,
+  opts: ExecutorOptions = {},
+): DbExecutor {
+  const pool = new Pool({
+    ...config,
+    // An explicit statementTimeoutMs wins; otherwise keep whatever the caller set in the config
+    // (undefined leaves pg's default of no timeout).
+    statement_timeout: opts.statementTimeoutMs ?? config.statement_timeout,
+  });
+  // An idle pooled client can emit 'error' asynchronously (the backend dropped the socket, a network
+  // blip). With NO listener, `pg` re-emits it as an unhandled 'error' and crashes the whole process.
+  // The pool discards the dead client and heals on the next acquire, so log-and-swallow is the job.
+  pool.on('error', (err) => {
+    // ponytail: console.error is the floor — swap for a structured logger if the app threads one in.
+    console.error('[sqleasy-engine] idle postgres client error (pool will recover):', err);
+  });
   const executor = createPostgresExecutorFromPool(pool);
   return {
     run: (prepared) => executor.run(prepared),

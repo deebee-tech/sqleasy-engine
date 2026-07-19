@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 // Shared recorder for the mssql driver mock (hoisted so it exists before the mock factory runs).
 const rec = vi.hoisted(() => ({
   events: [] as string[],
-  queries: [] as { sql: string; inputs: Record<string, unknown> }[],
-  batches: [] as { sql: string; inputs: Record<string, unknown> }[],
+  queries: [] as { sql: string; inputs: Record<string, unknown>; requestTimeout?: number }[],
+  batches: [] as { sql: string; inputs: Record<string, unknown>; requestTimeout?: number }[],
   failOn: undefined as string | undefined,
   failConnectOnce: false,
   failShowplanOff: false,
@@ -21,18 +21,22 @@ const rec = vi.hoisted(() => ({
 vi.mock('mssql', () => {
   class FakeRequest {
     inputs: Record<string, unknown> = {};
+    requestTimeout?: number;
+    constructor(_parent?: unknown, overrides?: { requestTimeout?: number }) {
+      this.requestTimeout = overrides?.requestTimeout;
+    }
     input(name: string, value: unknown) {
       this.inputs[name] = value;
       return this;
     }
     async query(sql: string) {
-      rec.queries.push({ sql, inputs: this.inputs });
+      rec.queries.push({ sql, inputs: this.inputs, requestTimeout: this.requestTimeout });
       if (rec.failOn && sql.includes(rec.failOn)) throw new Error(`boom: ${sql}`);
       return { recordset: [{ ok: 1 }], rowsAffected: [1] };
     }
     async batch(sql: string) {
       rec.events.push(`batch:${sql}`);
-      rec.batches.push({ sql, inputs: { ...this.inputs } });
+      rec.batches.push({ sql, inputs: { ...this.inputs }, requestTimeout: this.requestTimeout });
       if (rec.failShowplanOff && sql.includes('SHOWPLAN_XML OFF')) {
         throw new Error('showplan off failed');
       }
@@ -60,8 +64,8 @@ vi.mock('mssql', () => {
       rec.events.push('connect');
       return this;
     }
-    request() {
-      return new FakeRequest();
+    request(overrides?: { requestTimeout?: number }) {
+      return new FakeRequest(this, overrides);
     }
     async close() {
       rec.events.push('close');
@@ -243,6 +247,25 @@ describe('mssql orchestration', () => {
     const res = await db.run({ sql: 'SELECT 1;', params: [] });
     expect(res.rowCount).toBe(1);
     expect(rec.events).toContain('connect');
+  });
+});
+
+// ─── statementTimeoutMs: a per-Request requestTimeout override, reaching the connectionString form ──
+describe('mssql statementTimeoutMs', () => {
+  it('sets requestTimeout on the run and transaction requests', async () => {
+    rec.reset();
+    const db = createMssqlExecutor({ connectionString: 'x' }, { statementTimeoutMs: 30_000 });
+    await db.run({ sql: 'SELECT 1;', params: [] });
+    await db.transaction([batch('INSERT')]);
+    expect(rec.queries.every((q) => q.requestTimeout === 30_000)).toBe(true);
+    expect(rec.queries).not.toHaveLength(0);
+  });
+
+  it('leaves requestTimeout unset when the option is omitted', async () => {
+    rec.reset();
+    const db = createMssqlExecutor({ connectionString: 'x' });
+    await db.run({ sql: 'SELECT 1;', params: [] });
+    expect(rec.queries[0]!.requestTimeout).toBeUndefined();
   });
 });
 

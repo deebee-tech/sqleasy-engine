@@ -76,3 +76,24 @@ export type DbExecutor = {
    */
   close(): Promise<void>;
 };
+
+/**
+ * Options common to every dialect executor factory.
+ */
+export type ExecutorOptions = {
+  /**
+   * Per-statement timeout in milliseconds — a ceiling on how long ONE statement may run before it is
+   * aborted. Omit for no timeout. Each dialect realizes it with its native mechanism:
+   *
+   * - **Postgres** — `statement_timeout` merged into the pool config (server-enforced; the backend
+   *   cancels the statement). A no-op on `createPostgresExecutorFromPool`, whose foreign pool owns
+   *   its own config.
+   * - **MySQL** — a per-query client timeout; on expiry `mysql2` destroys the connection, which
+   *   makes the server kill the running statement.
+   * - **MSSQL** — a per-`Request` `requestTimeout`; the driver cancels the request on expiry.
+   * - **SQLite / libSQL** — a client-side deadline that rejects the awaited promise. Best-effort:
+   *   `@libsql/client` has no `interrupt()`, so a running REMOTE (Turso) statement keeps burning
+   *   server time after the reject; local file work is bounded in practice.
+   */
+  statementTimeoutMs?: number;
+};

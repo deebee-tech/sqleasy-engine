@@ -3,7 +3,14 @@
 import mssql from 'mssql';
 import type { config as MssqlDriverConfig, IResult } from 'mssql';
 import { trimExplainSql } from '../explain-body';
-import type { DbExecutor, ExplainEstimate, PreparedSql, QueryResult, Row } from '../index';
+import type {
+  DbExecutor,
+  ExecutorOptions,
+  ExplainEstimate,
+  PreparedSql,
+  QueryResult,
+  Row,
+} from '../index';
 
 const { ConnectionPool, Transaction, Request } = mssql;
 
@@ -158,10 +165,28 @@ const bindParams = <R extends BindableRequest>(request: R, params?: readonly unk
 /**
  * A SQL Server executor backed by an `mssql` connection pool. Accepts any `{ sql, params }` —
  * including self-contained `sp_executesql` batches and plain parameterized SQL using `@p0`… with
- * `params` bound via {@link Request.input}. There is no `FromPool` variant: this executor owns the
- * pool so it can rebuild it after a failed connect (mssql caches a rejected connect promise).
+ * `params` bound via {@link Request.input}. Pass `{ statementTimeoutMs }` for a per-`Request`
+ * `requestTimeout` (works for the `connectionString` form too, which config-level `requestTimeout`
+ * cannot reach). There is no `FromPool` variant: this executor owns the pool so it can rebuild it
+ * after a failed connect (mssql caches a rejected connect promise).
  */
-export function createMssqlExecutor(config: MssqlConfig): DbExecutor {
+export function createMssqlExecutor(config: MssqlConfig, opts: ExecutorOptions = {}): DbExecutor {
+  const { statementTimeoutMs } = opts;
+  // mssql's Request honors a per-request `{ requestTimeout }` override — the 2nd ctor arg, and the
+  // arg `pool.request()` forwards to it — which `@types/mssql` drops, so reach it through one narrow
+  // cast. This closes the connectionString gap: a raw connection string can't carry a config-level
+  // requestTimeout, but a per-Request override applies to both config forms.
+  type RequestOverrides = { requestTimeout?: number };
+  const overrides: RequestOverrides | undefined =
+    statementTimeoutMs != null ? { requestTimeout: statementTimeoutMs } : undefined;
+  const poolRequest = (): InstanceType<typeof Request> =>
+    (pool as unknown as { request(o?: RequestOverrides): InstanceType<typeof Request> }).request(
+      overrides,
+    );
+  const txRequest = (tx: InstanceType<typeof Transaction>): InstanceType<typeof Request> =>
+    new (
+      Request as unknown as new (p: unknown, o?: RequestOverrides) => InstanceType<typeof Request>
+    )(tx, overrides);
   const makePool = () =>
     new ConnectionPool('connectionString' in config ? config.connectionString : config);
   let pool = makePool();
@@ -191,7 +216,7 @@ export function createMssqlExecutor(config: MssqlConfig): DbExecutor {
   return {
     async run<T = Row>(prepared: PreparedSql): Promise<QueryResult<T>> {
       await ensureReady();
-      const request = bindParams(pool.request(), prepared.params);
+      const request = bindParams(poolRequest(), prepared.params);
       return toResult<T>(await request.query(withRowCounts(prepared.sql)));
     },
 
@@ -202,7 +227,7 @@ export function createMssqlExecutor(config: MssqlConfig): DbExecutor {
       try {
         const results: QueryResult[] = [];
         for (const s of statements) {
-          const request = bindParams(new Request(tx), s.params);
+          const request = bindParams(txRequest(tx), s.params);
           results.push(toResult(await request.query(withRowCounts(s.sql))));
         }
         await tx.commit();
@@ -224,7 +249,7 @@ export function createMssqlExecutor(config: MssqlConfig): DbExecutor {
       let retire = false;
       try {
         await new Request(tx).batch('SET SHOWPLAN_XML ON');
-        const request = bindParams(new Request(tx), prepared.params);
+        const request = bindParams(txRequest(tx), prepared.params);
         // Lift sp_executesql first (batches often start with SET NOCOUNT ON; …). The lift may be a
         // short DECLARE+SELECT batch — trim only; do not reject multi-statement the way PG/MySQL do.
         const res = await request.batch(trimExplainSql(toExplainableBatch(prepared.sql)));
